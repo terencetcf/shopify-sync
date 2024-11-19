@@ -9,26 +9,75 @@ import SwiftUI
 
 struct ContentView: View {
     @StateObject private var viewModel = ShopifyViewModel()
-    @State private var selectedCollection: Collection?
-    @Environment(\.colorScheme) var colorScheme
+    @State private var showingSettings = false
     
     var body: some View {
-        NavigationSplitView {
-            SidebarView(
-                collections: viewModel.collections,
-                selectedCollection: $selectedCollection
-            )
-        } detail: {
-            DetailView(viewModel: viewModel)
-        }
-        .navigationSplitViewStyle(.balanced)
-        .frame(minWidth: 900, minHeight: 600)
-        .alert("Error", isPresented: .constant(viewModel.errorMessage != nil)) {
-            Button("OK") { viewModel.errorMessage = nil }
-        } message: {
-            if let errorMessage = viewModel.errorMessage {
-                Text(errorMessage)
+        VStack(spacing: 0) {
+            // Toolbar
+            HStack {
+                Spacer()
+                
+                HStack(spacing: 12) {
+                    Button(action: viewModel.connectToShopify) {
+                        Label(viewModel.isConnected ? "Refresh" : "Connect", 
+                              systemImage: "arrow.triangle.2.circlepath")
+                    }
+                    .disabled(viewModel.isLoading)
+                    
+                    Button(action: viewModel.exportToCSV) {
+                        Label("Export", systemImage: "square.and.arrow.up")
+                    }
+                    .disabled(!viewModel.isConnected || viewModel.collections.isEmpty || viewModel.isLoading)
+                    
+                    Button(action: { showingSettings = true }) {
+                        Image(systemName: "gear")
+                            .font(.title2)
+                    }
+                }
             }
+            .padding(.horizontal)
+            .padding(.vertical, 8)
+            .background(Color(.windowBackgroundColor))
+            
+            Divider()
+            
+            // Main Content
+            MainContentView(viewModel: viewModel)
+            
+            Divider()
+            
+            // Status Bar
+            HStack(spacing: 8) {
+                Circle()
+                    .fill(viewModel.isConnected ? Color.green : Color.red)
+                    .frame(width: 8, height: 8)
+                
+                Text(viewModel.isConnected ? "Connected to Shopify" : "Not Connected")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                
+                Spacer()
+                
+                if viewModel.isLoading {
+                    ProgressView()
+                        .scaleEffect(0.7)
+                        .frame(width: 16, height: 16)
+                    
+                    Text("Loading...")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else if !viewModel.collections.isEmpty {
+                    Text("\(viewModel.collections.count) collections")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .padding(.horizontal)
+            .padding(.vertical, 4)
+            .background(Color(.windowBackgroundColor))
+        }
+        .sheet(isPresented: $showingSettings) {
+            SettingsView(viewModel: viewModel)
         }
     }
 }

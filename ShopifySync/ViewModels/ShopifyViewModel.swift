@@ -5,14 +5,18 @@ class ShopifyViewModel: ObservableObject {
     @Published var isConnected: Bool = false
     @Published var errorMessage: String?
     @Published var isLoading: Bool = false
+    @Published var credentials: ShopifyCredentials
     
-    // In production, these should be stored securely (e.g., in Keychain)
-    private let shopDomain = "the_domain.com"
-    private let accessToken = "the_access_token"
-    private let apiVersion = "2024-01"  // Changed to current stable version
+    private let apiVersion = "2024-01"
+    
+    init() {
+        // Load saved credentials or use empty values
+        self.credentials = SettingsManager.shared.loadCredentials() ?? 
+            ShopifyCredentials(shopDomain: "", accessToken: "")
+    }
     
     private var baseURL: String {
-        "https://\(shopDomain)/admin/api/\(apiVersion)"
+        "https://\(credentials.shopDomain)/admin/api/\(apiVersion)"
     }
     
     func connectToShopify() {
@@ -27,7 +31,7 @@ class ShopifyViewModel: ObservableObject {
         
         var request = URLRequest(url: url)
         // Fixed: Correct header format for Shopify Admin API
-        request.setValue(accessToken, forHTTPHeaderField: "X-Shopify-Access-Token")
+        request.setValue(credentials.accessToken, forHTTPHeaderField: "X-Shopify-Access-Token")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         
         print("Attempting to connect to: \(url.absoluteString)") // Debug line
@@ -92,7 +96,7 @@ class ShopifyViewModel: ObservableObject {
         
         var request = URLRequest(url: url)
         // Fixed: Correct header format for Shopify Admin API
-        request.setValue(accessToken, forHTTPHeaderField: "X-Shopify-Access-Token")
+        request.setValue(credentials.accessToken, forHTTPHeaderField: "X-Shopify-Access-Token")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         
         print("Fetching collections from: \(url.absoluteString)") // Debug line
@@ -168,5 +172,46 @@ class ShopifyViewModel: ObservableObject {
                 }
             }
         }
+    }
+}
+
+// Create a KeychainManager class to handle secure storage
+class KeychainManager {
+    static let shared = KeychainManager()
+    
+    private init() {}
+    
+    func setValue(_ value: String, for key: String) -> Bool {
+        let data = value.data(using: .utf8)!
+        
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrAccount as String: key,
+            kSecValueData as String: data
+        ]
+        
+        SecItemDelete(query as CFDictionary)
+        
+        let status = SecItemAdd(query as CFDictionary, nil)
+        return status == errSecSuccess
+    }
+    
+    func getValue(for key: String) -> String? {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrAccount as String: key,
+            kSecReturnData as String: kCFBooleanTrue!,
+            kSecMatchLimit as String: kSecMatchLimitOne
+        ]
+        
+        var dataTypeRef: AnyObject?
+        let status = SecItemCopyMatching(query as CFDictionary, &dataTypeRef)
+        
+        if status == errSecSuccess {
+            if let data = dataTypeRef as? Data {
+                return String(data: data, encoding: .utf8)
+            }
+        }
+        return nil
     }
 } 
