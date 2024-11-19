@@ -11,6 +11,7 @@ struct ContentView: View {
     @StateObject private var viewModel = ShopifyViewModel()
     @State private var showingSettings = false
     @State private var selectedTab = Tab.collections
+    @State private var selectedCollection: Collection?
     
     enum Tab {
         case collections, products
@@ -18,7 +19,7 @@ struct ContentView: View {
     
     var body: some View {
         VStack(spacing: 0) {
-            // Toolbar
+            // Tab Selector and Toolbar
             HStack {
                 Picker("", selection: $selectedTab) {
                     Text("Collections").tag(Tab.collections)
@@ -67,12 +68,25 @@ struct ContentView: View {
             Divider()
             
             // Main Content
-            Group {
-                switch selectedTab {
-                case .collections:
-                    MainContentView(viewModel: viewModel, selectedTab: selectedTab)
-                case .products:
-                    ProductsView(viewModel: viewModel)
+            if let selectedCollection = selectedCollection {
+                // Show collection products view when a collection is selected
+                CollectionProductsView(viewModel: viewModel, collection: selectedCollection)
+                    .overlay(alignment: .topLeading) {
+                        Button(action: { self.selectedCollection = nil }) {
+                            Label("Back to Collections", systemImage: "chevron.left")
+                                .labelStyle(.titleAndIcon)
+                        }
+                        .padding()
+                    }
+            } else {
+                // Show main content based on selected tab
+                Group {
+                    switch selectedTab {
+                    case .collections:
+                        CollectionsView(viewModel: viewModel, selectedCollection: $selectedCollection)
+                    case .products:
+                        ProductsView(viewModel: viewModel)
+                    }
                 }
             }
             
@@ -87,104 +101,190 @@ struct ContentView: View {
     }
 }
 
-// MARK: - Sidebar View
-private struct SidebarView: View {
-    let collections: [Collection]
+// MARK: - Collections View
+private struct CollectionsView: View {
+    @ObservedObject var viewModel: ShopifyViewModel
     @Binding var selectedCollection: Collection?
+    @State private var showingProducts = false
     
     var body: some View {
-        List(selection: $selectedCollection) {
-            Section {
-                Label("Collections", systemImage: "folder.fill")
-                    .font(.headline)
-                    .foregroundStyle(.secondary)
-                    .padding(.vertical, 4)
-            }
-            
-            if !collections.isEmpty {
-                Section {
-                    ForEach(collections) { collection in
-                        NavigationLink(value: collection) {
-                            Label {
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text(collection.title)
-                                        .fontWeight(.medium)
-                                    Text("ID: \(collection.id)")
-                                        .font(.caption)
-                                        .foregroundStyle(.secondary)
-                                }
-                            } icon: {
-                                Image(systemName: "tag.fill")
-                                    .foregroundStyle(.blue)
-                            }
-                            .padding(.vertical, 2)
-                        }
+        if viewModel.isLoading {
+            LoadingView(selectedTab: .collections)
+        } else if viewModel.collections.isEmpty {
+            EmptyStateView(viewModel: viewModel, selectedTab: .collections)
+        } else {
+            Table(viewModel.collections) {
+                TableColumn("Actions") { collection in
+                    Button(action: {
+                        let window = CollectionProductsWindow(collection: collection, viewModel: viewModel)
+                        NSApp.windows.first(where: { $0 is CollectionProductsWindow })?.close()
+                        window.makeKeyAndOrderFront(nil)
+                    }) {
+                        Label("See Products", systemImage: "tag.fill")
                     }
-                } header: {
-                    Text("All Collections")
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
+                }
+                .width(min: 120, ideal: 120)
+                
+                TableColumn("ID", value: \.id.description)
+                    .width(min: 80, ideal: 100)
+                
+                TableColumn("Title", value: \.title)
+                    .width(min: 250, ideal: 300)
+                
+                TableColumn("Handle", value: \.handle)
+                    .width(min: 150, ideal: 200)
+                
+                TableColumn("Published Scope", value: \.publishedScope)
+                    .width(min: 120, ideal: 150)
+                
+                TableColumn("Last Updated") { collection in
+                    Text(collection.updatedAt.formatted(date: .abbreviated, time: .shortened))
                         .foregroundStyle(.secondary)
+                }
+                .width(min: 180, ideal: 200)
+                
+                TableColumn("Image") { collection in
+                    if let image = collection.image {
+                        AsyncImage(url: URL(string: image.src)) { phase in
+                            switch phase {
+                            case .empty:
+                                ProgressView()
+                                    .frame(width: 40, height: 40)
+                            case .success(let image):
+                                image
+                                    .resizable()
+                                    .aspectRatio(contentMode: .fit)
+                                    .frame(width: 40, height: 40)
+                                    .clipShape(RoundedRectangle(cornerRadius: 4))
+                            case .failure:
+                                Image(systemName: "photo")
+                                    .symbolRenderingMode(.hierarchical)
+                                    .foregroundStyle(.secondary)
+                                    .frame(width: 40, height: 40)
+                            @unknown default:
+                                EmptyView()
+                            }
+                        }
+                    } else {
+                        Image(systemName: "photo")
+                            .symbolRenderingMode(.hierarchical)
+                            .foregroundStyle(.secondary)
+                            .frame(width: 40, height: 40)
+                    }
+                }
+                .width(min: 60, ideal: 60)
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .sheet(isPresented: $showingProducts) {
+                if let collection = selectedCollection {
+                    CollectionProductsView(viewModel: viewModel, collection: collection)
+                        .frame(minWidth: 800, minHeight: 600)
                 }
             }
         }
-        .navigationTitle("Shopify Sync")
     }
 }
 
-// MARK: - Detail View
-private struct DetailView: View {
+// Add this new struct to handle table selection
+private struct TableSelectionCoordinator: NSViewRepresentable {
+    let collections: [Collection]
+    @Binding var selectedCollection: Collection?
+    
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView()
+        DispatchQueue.main.async {
+            if let tableView = view.window?.contentView?.subviews.first(where: { $0 is NSTableView }) as? NSTableView {
+                tableView.delegate = context.coordinator
+                tableView.target = context.coordinator
+                tableView.action = #selector(Coordinator.tableViewClicked(_:))
+            }
+        }
+        return view
+    }
+    
+    func updateNSView(_ nsView: NSView, context: Context) {
+        context.coordinator.collections = collections
+        context.coordinator.selectedCollection = $selectedCollection
+    }
+    
+    func makeCoordinator() -> Coordinator {
+        Coordinator(collections: collections, selectedCollection: $selectedCollection)
+    }
+    
+    class Coordinator: NSObject, NSTableViewDelegate {
+        var collections: [Collection]
+        var selectedCollection: Binding<Collection?>
+        
+        init(collections: [Collection], selectedCollection: Binding<Collection?>) {
+            self.collections = collections
+            self.selectedCollection = selectedCollection
+        }
+        
+        @objc func tableViewClicked(_ sender: NSTableView) {
+            let row = sender.clickedRow
+            if row >= 0 && row < collections.count {
+                selectedCollection.wrappedValue = collections[row]
+            }
+        }
+    }
+}
+
+// MARK: - Loading View
+private struct LoadingView: View {
+    let selectedTab: ContentView.Tab
+    
+    var body: some View {
+        VStack(spacing: 16) {
+            ProgressView()
+                .scaleEffect(1.2)
+                .controlSize(.large)
+            Text("Loading \(selectedTab == .collections ? "collections" : "products")...")
+                .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color(.windowBackgroundColor))
+    }
+}
+
+// MARK: - Empty State View
+private struct EmptyStateView: View {
     @ObservedObject var viewModel: ShopifyViewModel
     let selectedTab: ContentView.Tab
     
     var body: some View {
-        VStack(spacing: 0) {
-            ToolbarView(viewModel: viewModel)
-            
-            Divider()
-            
-            MainContentView(viewModel: viewModel, selectedTab: selectedTab)
-            
-            Divider()
-            
-            StatusBarView(viewModel: viewModel, selectedTab: selectedTab)
-        }
-        .toolbar {
-            ToolbarItem(placement: .navigation) {
-                Button(action: toggleSidebar) {
-                    Image(systemName: "sidebar.left")
-                }
+        ContentUnavailableView {
+            Label {
+                Text(selectedTab == .collections ? "No Collections" : "No Products")
+                    .fontWeight(.medium)
+            } icon: {
+                Image(systemName: selectedTab == .collections ? "tray.fill" : "tag.fill")
+                    .symbolRenderingMode(.hierarchical)
+                    .foregroundStyle(.secondary)
+                    .font(.system(size: 36))
             }
-        }
-    }
-    
-    private func toggleSidebar() {
-        NSApp.keyWindow?.firstResponder?
-            .tryToPerform(#selector(NSSplitViewController.toggleSidebar(_:)), with: nil)
-    }
-}
-
-// MARK: - Toolbar View
-private struct ToolbarView: View {
-    @ObservedObject var viewModel: ShopifyViewModel
-    
-    var body: some View {
-        HStack {
-            Spacer()
-            
-            HStack(spacing: 12) {
-                Button(action: viewModel.connectToShopify) {
-                    Label(viewModel.isConnected ? "Refresh" : "Connect", 
-                          systemImage: "arrow.triangle.2.circlepath")
+        } description: {
+            Text(selectedTab == .collections ? 
+                 "Connect to Shopify to view your collections" : 
+                 "Connect to Shopify to view your products")
+                .foregroundStyle(.secondary)
+        } actions: {
+            Button(action: {
+                if selectedTab == .collections {
+                    viewModel.connectToShopify()
+                } else {
+                    viewModel.fetchProducts()
                 }
-                .disabled(viewModel.isLoading)
-                
-                Button(action: viewModel.exportToCSV) {
-                    Label("Export", systemImage: "square.and.arrow.up")
-                }
-                .disabled(!viewModel.isConnected || viewModel.collections.isEmpty || viewModel.isLoading)
+            }) {
+                Label(selectedTab == .collections ? "Connect to Shopify" : "Fetch Products", 
+                      systemImage: selectedTab == .collections ? "link" : "arrow.triangle.2.circlepath")
             }
+            .buttonStyle(.borderedProminent)
+            .controlSize(.large)
         }
-        .padding(.horizontal)
-        .padding(.vertical, 8)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color(.windowBackgroundColor))
     }
 }
@@ -234,141 +334,6 @@ private struct StatusBarView: View {
         .padding(.horizontal)
         .padding(.vertical, 4)
         .background(Color(.windowBackgroundColor))
-    }
-}
-
-// MARK: - Main Content View
-private struct MainContentView: View {
-    @ObservedObject var viewModel: ShopifyViewModel
-    let selectedTab: ContentView.Tab
-    @Environment(\.colorScheme) var colorScheme
-    
-    var body: some View {
-        Group {
-            if viewModel.isLoading {
-                LoadingView(selectedTab: selectedTab)
-            } else if viewModel.collections.isEmpty {
-                EmptyStateView(viewModel: viewModel, selectedTab: selectedTab)
-            } else {
-                CollectionsTable(collections: viewModel.collections)
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 4)
-            }
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Color(.windowBackgroundColor))
-    }
-}
-
-private struct LoadingView: View {
-    let selectedTab: ContentView.Tab
-    
-    var body: some View {
-        VStack(spacing: 16) {
-            ProgressView()
-                .scaleEffect(1.2)
-                .controlSize(.large)
-            Text("Loading \(selectedTab == .collections ? "collections" : "products")...")
-                .foregroundStyle(.secondary)
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Color(.windowBackgroundColor))
-    }
-}
-
-private struct EmptyStateView: View {
-    @ObservedObject var viewModel: ShopifyViewModel
-    let selectedTab: ContentView.Tab
-    
-    var body: some View {
-        ContentUnavailableView {
-            Label {
-                Text(selectedTab == .collections ? "No Collections" : "No Products")
-                    .fontWeight(.medium)
-            } icon: {
-                Image(systemName: selectedTab == .collections ? "tray.fill" : "tag.fill")
-                    .symbolRenderingMode(.hierarchical)
-                    .foregroundStyle(.secondary)
-                    .font(.system(size: 36))
-            }
-        } description: {
-            Text(selectedTab == .collections ? 
-                 "Connect to Shopify to view your collections" : 
-                 "Connect to Shopify to view your products")
-                .foregroundStyle(.secondary)
-        } actions: {
-            Button(action: {
-                if selectedTab == .collections {
-                    viewModel.connectToShopify()
-                } else {
-                    viewModel.fetchProducts()
-                }
-            }) {
-                Label(selectedTab == .collections ? "Connect to Shopify" : "Fetch Products", 
-                      systemImage: selectedTab == .collections ? "link" : "arrow.triangle.2.circlepath")
-            }
-            .buttonStyle(.borderedProminent)
-            .controlSize(.large)
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Color(.windowBackgroundColor))
-    }
-}
-
-private struct CollectionsTable: View {
-    let collections: [Collection]
-    
-    var body: some View {
-        Table(collections) {
-            TableColumn("ID", value: \.id.description)
-                .width(min: 80, ideal: 100)
-            
-            TableColumn("Title", value: \.title)
-                .width(min: 250, ideal: 300)
-            
-            TableColumn("Handle", value: \.handle)
-                .width(min: 150, ideal: 200)
-            
-            TableColumn("Published Scope", value: \.publishedScope)
-                .width(min: 120, ideal: 150)
-            
-            TableColumn("Last Updated") { collection in
-                Text(collection.updatedAt.formatted(date: .abbreviated, time: .shortened))
-                    .foregroundStyle(.secondary)
-            }
-            .width(min: 180, ideal: 200)
-            
-            TableColumn("Image") { collection in
-                if let image = collection.image {
-                    AsyncImage(url: URL(string: image.src)) { phase in
-                        switch phase {
-                        case .empty:
-                            ProgressView()
-                                .frame(width: 40, height: 40)
-                        case .success(let image):
-                            image
-                                .resizable()
-                                .aspectRatio(contentMode: .fit)
-                                .frame(width: 40, height: 40)
-                                .clipShape(RoundedRectangle(cornerRadius: 4))
-                        case .failure:
-                            Image(systemName: "photo")
-                                .symbolRenderingMode(.hierarchical)
-                                .foregroundStyle(.secondary)
-                                .frame(width: 40, height: 40)
-                        @unknown default:
-                            EmptyView()
-                        }
-                    }
-                } else {
-                    Image(systemName: "photo")
-                        .symbolRenderingMode(.hierarchical)
-                        .foregroundStyle(.secondary)
-                        .frame(width: 40, height: 40)
-                }
-            }
-            .width(min: 60, ideal: 60)
-        }
     }
 }
 

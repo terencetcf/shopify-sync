@@ -6,7 +6,10 @@ class ShopifyViewModel: ObservableObject {
     @Published var isConnected: Bool = false
     @Published var errorMessage: String?
     @Published var isLoading: Bool = false
+    @Published var isLoadingCollectionProducts: Bool = false
     @Published var credentials: ShopifyCredentials
+    @Published var selectedCollection: Collection?
+    @Published var collectionProducts: [Product] = []
     
     private let apiVersion = "2024-01"
     
@@ -264,6 +267,106 @@ class ShopifyViewModel: ObservableObject {
         let prices = variants.compactMap { Double($0.price) }
         guard let min = prices.min(), let max = prices.max() else { return "N/A" }
         return min == max ? "$\(min)" : "$\(min) - $\(max)"
+    }
+    
+    func fetchProductsForCollection(_ collection: Collection) {
+        guard isConnected else {
+            errorMessage = "Please connect to Shopify first"
+            return
+        }
+        
+        isLoadingCollectionProducts = true
+        errorMessage = nil
+        selectedCollection = collection
+        
+        // First, get the collects (product-collection relationships)
+        guard let url = URL(string: "\(baseURL)/collects.json?collection_id=\(collection.id)") else {
+            errorMessage = "Invalid API URL"
+            isLoadingCollectionProducts = false
+            return
+        }
+        
+        var request = URLRequest(url: url)
+        request.setValue(credentials.accessToken, forHTTPHeaderField: "X-Shopify-Access-Token")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        
+        URLSession.shared.dataTask(with: request) { [weak self] data, response, error in
+            if let error = error {
+                DispatchQueue.main.async {
+                    self?.errorMessage = "Failed to fetch collection products: \(error.localizedDescription)"
+                    self?.isLoadingCollectionProducts = false
+                }
+                return
+            }
+            
+            guard let data = data else {
+                DispatchQueue.main.async {
+                    self?.errorMessage = "No data received"
+                    self?.isLoadingCollectionProducts = false
+                }
+                return
+            }
+            
+            do {
+                let collectResponse = try JSONDecoder().decode(CollectResponse.self, from: data)
+                let productIds = collectResponse.collects.map { String($0.productId) }
+                
+                if productIds.isEmpty {
+                    DispatchQueue.main.async {
+                        self?.collectionProducts = []
+                        self?.isLoadingCollectionProducts = false
+                    }
+                    return
+                }
+                
+                // Now fetch the actual products using the product IDs
+                self?.fetchProductsByIds(productIds)
+                
+            } catch {
+                DispatchQueue.main.async {
+                    self?.errorMessage = "Failed to parse collection products: \(error.localizedDescription)"
+                    self?.isLoadingCollectionProducts = false
+                }
+            }
+        }.resume()
+    }
+    
+    private func fetchProductsByIds(_ productIds: [String]) {
+        let idsString = productIds.joined(separator: ",")
+        guard let url = URL(string: "\(baseURL)/products.json?ids=\(idsString)") else {
+            errorMessage = "Invalid API URL"
+            isLoadingCollectionProducts = false
+            return
+        }
+        
+        var request = URLRequest(url: url)
+        request.setValue(credentials.accessToken, forHTTPHeaderField: "X-Shopify-Access-Token")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        
+        URLSession.shared.dataTask(with: request) { [weak self] data, response, error in
+            DispatchQueue.main.async {
+                self?.isLoadingCollectionProducts = false
+                
+                if let error = error {
+                    self?.errorMessage = "Failed to fetch products: \(error.localizedDescription)"
+                    return
+                }
+                
+                guard let data = data else {
+                    self?.errorMessage = "No data received"
+                    return
+                }
+                
+                do {
+                    let decoder = JSONDecoder()
+                    decoder.dateDecodingStrategy = .iso8601
+                    let response = try decoder.decode(ProductsResponse.self, from: data)
+                    self?.collectionProducts = response.products
+                } catch {
+                    self?.errorMessage = "Failed to parse products: \(error.localizedDescription)"
+                }
+            }
+        }.resume()
     }
 }
 

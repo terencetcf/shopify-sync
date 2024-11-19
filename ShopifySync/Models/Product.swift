@@ -1,6 +1,6 @@
 import Foundation
 
-struct Product: Codable, Identifiable {
+struct Product: Codable, Identifiable, Hashable {
     let id: Int64
     let title: String
     let handle: String
@@ -34,9 +34,17 @@ struct Product: Codable, Identifiable {
         variants = try container.decode([ProductVariant].self, forKey: .variants)
         images = try container.decode([ProductImage].self, forKey: .images)
     }
+    
+    func hash(into hasher: inout Hasher) {
+        hasher.combine(id)
+    }
+    
+    static func == (lhs: Product, rhs: Product) -> Bool {
+        lhs.id == rhs.id
+    }
 }
 
-struct ProductVariant: Codable, Identifiable {
+struct ProductVariant: Codable, Identifiable, Hashable {
     let id: Int64
     let title: String
     let price: String
@@ -50,7 +58,7 @@ struct ProductVariant: Codable, Identifiable {
     }
 }
 
-struct ProductImage: Codable {
+struct ProductImage: Codable, Hashable {
     let id: Int64
     let src: String
     let width: Int
