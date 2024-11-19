@@ -2,6 +2,7 @@ import SwiftUI
 
 class ShopifyViewModel: ObservableObject {
     @Published var collections: [Collection] = []
+    @Published var products: [Product] = []
     @Published var isConnected: Bool = false
     @Published var errorMessage: String?
     @Published var isLoading: Bool = false
@@ -10,7 +11,6 @@ class ShopifyViewModel: ObservableObject {
     private let apiVersion = "2024-01"
     
     init() {
-        // Load saved credentials or use empty values
         self.credentials = SettingsManager.shared.loadCredentials() ?? 
             ShopifyCredentials(shopDomain: "", accessToken: "")
     }
@@ -142,6 +142,93 @@ class ShopifyViewModel: ObservableObject {
         }.resume()
     }
     
+    func fetchProducts() {
+        guard isConnected else {
+            errorMessage = "Please connect to Shopify first"
+            return
+        }
+        
+        isLoading = true
+        errorMessage = nil
+        
+        guard let url = URL(string: "\(baseURL)/products.json") else {
+            errorMessage = "Invalid API URL"
+            isLoading = false
+            return
+        }
+        
+        var request = URLRequest(url: url)
+        request.setValue(credentials.accessToken, forHTTPHeaderField: "X-Shopify-Access-Token")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        
+        URLSession.shared.dataTask(with: request) { [weak self] data, response, error in
+            DispatchQueue.main.async {
+                self?.isLoading = false
+                
+                if let error = error {
+                    self?.errorMessage = "Failed to fetch products: \(error.localizedDescription)"
+                    return
+                }
+                
+                guard let data = data else {
+                    self?.errorMessage = "No data received"
+                    return
+                }
+                
+                do {
+                    let decoder = JSONDecoder()
+                    decoder.dateDecodingStrategy = .iso8601
+                    
+                    let response = try decoder.decode(ProductsResponse.self, from: data)
+                    self?.products = response.products
+                    
+                    if response.products.isEmpty {
+                        self?.errorMessage = "No products found"
+                    }
+                } catch {
+                    self?.errorMessage = "Failed to parse products: \(error.localizedDescription)"
+                }
+            }
+        }.resume()
+    }
+    
+    func exportProductsToCSV() {
+        let headers = ["ID", "Title", "Handle", "Vendor", "Type", "Status", "Published At", "Variants", "Price Range"]
+        var csvString = headers.joined(separator: ",") + "\n"
+        
+        for product in products {
+            let priceRange = getPriceRange(from: product.variants)
+            let publishedAtString = product.publishedAt.map { DateFormatter.localizedString(from: $0, dateStyle: .medium, timeStyle: .medium) } ?? "Not published"
+            
+            let row = [
+                String(product.id),
+                product.title,
+                product.handle,
+                product.vendor,
+                product.productType,
+                product.status,
+                publishedAtString,
+                String(product.variants.count),
+                priceRange
+            ]
+            csvString += row.joined(separator: ",") + "\n"
+        }
+        
+        let savePanel = NSSavePanel()
+        savePanel.allowedContentTypes = [.commaSeparatedText]
+        savePanel.nameFieldStringValue = "shopify_products.csv"
+        
+        savePanel.begin { result in
+            if result == .OK, let url = savePanel.url {
+                do {
+                    try csvString.write(to: url, atomically: true, encoding: .utf8)
+                } catch {
+                    self.errorMessage = "Failed to save CSV: \(error.localizedDescription)"
+                }
+            }
+        }
+    }
+    
     func exportToCSV() {
         let headers = ["ID", "Title", "Handle", "Published Scope", "Last Updated", "Image URL"]
         var csvString = headers.joined(separator: ",") + "\n"
@@ -158,7 +245,6 @@ class ShopifyViewModel: ObservableObject {
             csvString += row.joined(separator: ",") + "\n"
         }
         
-        // Save CSV file
         let savePanel = NSSavePanel()
         savePanel.allowedContentTypes = [.commaSeparatedText]
         savePanel.nameFieldStringValue = "shopify_collections.csv"
@@ -172,6 +258,12 @@ class ShopifyViewModel: ObservableObject {
                 }
             }
         }
+    }
+    
+    private func getPriceRange(from variants: [ProductVariant]) -> String {
+        let prices = variants.compactMap { Double($0.price) }
+        guard let min = prices.min(), let max = prices.max() else { return "N/A" }
+        return min == max ? "$\(min)" : "$\(min) - $\(max)"
     }
 }
 

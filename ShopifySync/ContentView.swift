@@ -10,24 +10,49 @@ import SwiftUI
 struct ContentView: View {
     @StateObject private var viewModel = ShopifyViewModel()
     @State private var showingSettings = false
+    @State private var selectedTab = Tab.collections
+    
+    enum Tab {
+        case collections, products
+    }
     
     var body: some View {
         VStack(spacing: 0) {
             // Toolbar
             HStack {
+                Picker("", selection: $selectedTab) {
+                    Text("Collections").tag(Tab.collections)
+                    Text("Products").tag(Tab.products)
+                }
+                .pickerStyle(.segmented)
+                .frame(width: 200)
+                
                 Spacer()
                 
                 HStack(spacing: 12) {
-                    Button(action: viewModel.connectToShopify) {
+                    Button(action: {
+                        viewModel.connectToShopify()
+                        if selectedTab == .products {
+                            viewModel.fetchProducts()
+                        }
+                    }) {
                         Label(viewModel.isConnected ? "Refresh" : "Connect", 
                               systemImage: "arrow.triangle.2.circlepath")
                     }
                     .disabled(viewModel.isLoading)
                     
-                    Button(action: viewModel.exportToCSV) {
+                    Button(action: {
+                        if selectedTab == .collections {
+                            viewModel.exportToCSV()
+                        } else {
+                            viewModel.exportProductsToCSV()
+                        }
+                    }) {
                         Label("Export", systemImage: "square.and.arrow.up")
                     }
-                    .disabled(!viewModel.isConnected || viewModel.collections.isEmpty || viewModel.isLoading)
+                    .disabled(!viewModel.isConnected || 
+                             (selectedTab == .collections ? viewModel.collections.isEmpty : viewModel.products.isEmpty) || 
+                             viewModel.isLoading)
                     
                     Button(action: { showingSettings = true }) {
                         Image(systemName: "gear")
@@ -42,39 +67,19 @@ struct ContentView: View {
             Divider()
             
             // Main Content
-            MainContentView(viewModel: viewModel)
+            Group {
+                switch selectedTab {
+                case .collections:
+                    MainContentView(viewModel: viewModel, selectedTab: selectedTab)
+                case .products:
+                    ProductsView(viewModel: viewModel)
+                }
+            }
             
             Divider()
             
             // Status Bar
-            HStack(spacing: 8) {
-                Circle()
-                    .fill(viewModel.isConnected ? Color.green : Color.red)
-                    .frame(width: 8, height: 8)
-                
-                Text(viewModel.isConnected ? "Connected to Shopify" : "Not Connected")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                
-                Spacer()
-                
-                if viewModel.isLoading {
-                    ProgressView()
-                        .scaleEffect(0.7)
-                        .frame(width: 16, height: 16)
-                    
-                    Text("Loading...")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                } else if !viewModel.collections.isEmpty {
-                    Text("\(viewModel.collections.count) collections")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-            }
-            .padding(.horizontal)
-            .padding(.vertical, 4)
-            .background(Color(.windowBackgroundColor))
+            StatusBarView(viewModel: viewModel, selectedTab: selectedTab)
         }
         .sheet(isPresented: $showingSettings) {
             SettingsView(viewModel: viewModel)
@@ -128,6 +133,7 @@ private struct SidebarView: View {
 // MARK: - Detail View
 private struct DetailView: View {
     @ObservedObject var viewModel: ShopifyViewModel
+    let selectedTab: ContentView.Tab
     
     var body: some View {
         VStack(spacing: 0) {
@@ -135,11 +141,11 @@ private struct DetailView: View {
             
             Divider()
             
-            MainContentView(viewModel: viewModel)
+            MainContentView(viewModel: viewModel, selectedTab: selectedTab)
             
             Divider()
             
-            StatusBarView(viewModel: viewModel)
+            StatusBarView(viewModel: viewModel, selectedTab: selectedTab)
         }
         .toolbar {
             ToolbarItem(placement: .navigation) {
@@ -186,6 +192,7 @@ private struct ToolbarView: View {
 // MARK: - Status Bar View
 private struct StatusBarView: View {
     @ObservedObject var viewModel: ShopifyViewModel
+    let selectedTab: ContentView.Tab
     
     var body: some View {
         HStack(spacing: 8) {
@@ -207,10 +214,21 @@ private struct StatusBarView: View {
                 Text("Loading...")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-            } else if !viewModel.collections.isEmpty {
-                Text("\(viewModel.collections.count) collections")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+            } else {
+                switch selectedTab {
+                case .collections:
+                    if !viewModel.collections.isEmpty {
+                        Text("\(viewModel.collections.count) collections")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                case .products:
+                    if !viewModel.products.isEmpty {
+                        Text("\(viewModel.products.count) products")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
             }
         }
         .padding(.horizontal)
@@ -222,14 +240,15 @@ private struct StatusBarView: View {
 // MARK: - Main Content View
 private struct MainContentView: View {
     @ObservedObject var viewModel: ShopifyViewModel
+    let selectedTab: ContentView.Tab
     @Environment(\.colorScheme) var colorScheme
     
     var body: some View {
         Group {
             if viewModel.isLoading {
-                LoadingView()
+                LoadingView(selectedTab: selectedTab)
             } else if viewModel.collections.isEmpty {
-                EmptyStateView(viewModel: viewModel)
+                EmptyStateView(viewModel: viewModel, selectedTab: selectedTab)
             } else {
                 CollectionsTable(collections: viewModel.collections)
                     .padding(.horizontal, 8)
@@ -242,12 +261,14 @@ private struct MainContentView: View {
 }
 
 private struct LoadingView: View {
+    let selectedTab: ContentView.Tab
+    
     var body: some View {
         VStack(spacing: 16) {
             ProgressView()
                 .scaleEffect(1.2)
                 .controlSize(.large)
-            Text("Loading collections...")
+            Text("Loading \(selectedTab == .collections ? "collections" : "products")...")
                 .foregroundStyle(.secondary)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -257,24 +278,34 @@ private struct LoadingView: View {
 
 private struct EmptyStateView: View {
     @ObservedObject var viewModel: ShopifyViewModel
+    let selectedTab: ContentView.Tab
     
     var body: some View {
         ContentUnavailableView {
             Label {
-                Text("No Collections")
+                Text(selectedTab == .collections ? "No Collections" : "No Products")
                     .fontWeight(.medium)
             } icon: {
-                Image(systemName: "tray.fill")
+                Image(systemName: selectedTab == .collections ? "tray.fill" : "tag.fill")
                     .symbolRenderingMode(.hierarchical)
                     .foregroundStyle(.secondary)
                     .font(.system(size: 36))
             }
         } description: {
-            Text("Connect to Shopify to view your collections")
+            Text(selectedTab == .collections ? 
+                 "Connect to Shopify to view your collections" : 
+                 "Connect to Shopify to view your products")
                 .foregroundStyle(.secondary)
         } actions: {
-            Button(action: viewModel.connectToShopify) {
-                Label("Connect to Shopify", systemImage: "link")
+            Button(action: {
+                if selectedTab == .collections {
+                    viewModel.connectToShopify()
+                } else {
+                    viewModel.fetchProducts()
+                }
+            }) {
+                Label(selectedTab == .collections ? "Connect to Shopify" : "Fetch Products", 
+                      systemImage: selectedTab == .collections ? "link" : "arrow.triangle.2.circlepath")
             }
             .buttonStyle(.borderedProminent)
             .controlSize(.large)
